@@ -3,7 +3,6 @@
 //
 
 #include "GazeboA1ROS.h"
-
 // constructor
 GazeboA1ROS::GazeboA1ROS(ros::NodeHandle &_nh) {
     nh = _nh;
@@ -33,6 +32,8 @@ GazeboA1ROS::GazeboA1ROS(ros::NodeHandle &_nh) {
     // ROS register callback, call backs directly modify variables in A1CtrlStates
     sub_gt_pose_msg = nh.subscribe("/torso_odom", 100, &GazeboA1ROS::gt_pose_callback, this);
     sub_imu_msg = nh.subscribe("/trunk_imu", 100, &GazeboA1ROS::imu_callback, this);
+    sub_gazebo_model_state_msg_ = nh.subscribe("/gazebo/model_states",100, &GazeboA1ROS::gazebo_model_state_callback,
+                                               this);
 
     sub_joint_msg[0] = nh.subscribe("/a1_gazebo/FL_hip_controller/state", 2, &GazeboA1ROS::FL_hip_state_callback, this);
     sub_joint_msg[1] = nh.subscribe("/a1_gazebo/FL_thigh_controller/state", 2, &GazeboA1ROS::FL_thigh_state_callback, this);
@@ -190,12 +191,12 @@ bool GazeboA1ROS::main_update(double t, double dt) {
     _root_control.update_plan(a1_ctrl_states, dt);
     _root_control.generate_swing_legs_ctrl(a1_ctrl_states, dt);
 
-    // state estimation
-    if (!a1_estimate.is_inited()) {
-        a1_estimate.init_state(a1_ctrl_states);
-    } else {
-        a1_estimate.update_estimation(a1_ctrl_states, dt);
-    }
+    // state estimation, not good, use ground truth from gazebo, fix TODO.
+//    if (!a1_estimate.is_inited()) {
+//        a1_estimate.init_state(a1_ctrl_states);
+//    } else {
+//        a1_estimate.update_estimation(a1_ctrl_states, dt);
+//    }
 
     nav_msgs::Odometry estimate_odom;
     estimate_odom.pose.pose.position.x = a1_ctrl_states.estimated_root_pos(0);
@@ -299,6 +300,69 @@ void GazeboA1ROS::imu_callback(const sensor_msgs::Imu::ConstPtr &imu) {
     a1_ctrl_states.root_ang_vel = a1_ctrl_states.root_rot_mat * a1_ctrl_states.imu_ang_vel;
 }
 
+void GazeboA1ROS::gazebo_model_state_callback(const gazebo_msgs::ModelStates::ConstPtr &model_states) {
+    a1_ctrl_states.root_pos[0] = model_states->pose[2].position.x;
+    a1_ctrl_states.root_pos[1] = model_states->pose[2].position.y;
+    a1_ctrl_states.root_pos[2] = model_states->pose[2].position.z;
+
+    a1_ctrl_states.estimated_root_pos(0) = model_states->pose[2].position.x;
+    a1_ctrl_states.estimated_root_pos(1) = model_states->pose[2].position.y;
+    a1_ctrl_states.estimated_root_pos(2) = model_states->pose[2].position.z;
+
+//    std::cout<<"z is "<<a1_ctrl_states.root_pos[2]<<"\n";
+
+    a1_ctrl_states.root_lin_vel[0] = model_states->twist[2].linear.x;
+    a1_ctrl_states.root_lin_vel[1] = model_states->twist[2].linear.y;
+    a1_ctrl_states.root_lin_vel[2] = model_states->twist[2].linear.z;
+
+    // update
+    a1_ctrl_states.root_quat = Eigen::Quaterniond(model_states->pose[2].orientation.w,
+                                                  model_states->pose[2].orientation.x,
+                                                  model_states->pose[2].orientation.y,
+                                                  model_states->pose[2].orientation.z);
+    // a1_ctrl_states.root_pos << odom->pose.pose.position.x,
+    //         odom->pose.pose.position.y,
+    //         odom->pose.pose.position.z;
+    // // make sure root_lin_vel is in world frame
+    // a1_ctrl_states.root_lin_vel << odom->twist.twist.linear.x,
+    //         odom->twist.twist.linear.y,
+    //         odom->twist.twist.linear.z;
+
+    // make sure root_ang_vel is in world frame
+    // a1_ctrl_states.root_ang_vel << odom->twist.twist.angular.x,
+    //         odom->twist.twist.angular.y,
+    //         odom->twist.twist.angular.z;
+
+
+    // calculate several useful variables
+    // euler should be roll pitch yaw
+    a1_ctrl_states.root_rot_mat = a1_ctrl_states.root_quat.toRotationMatrix();
+    a1_ctrl_states.root_euler = Utils::quat_to_euler(a1_ctrl_states.root_quat);
+    double yaw_angle = a1_ctrl_states.root_euler[2];
+
+    a1_ctrl_states.root_rot_mat_z = Eigen::AngleAxisd(yaw_angle, Eigen::Vector3d::UnitZ());
+
+    // FL, FR, RL, RR
+    for (int i = 0; i < NUM_LEG; ++i) {
+        a1_ctrl_states.foot_pos_rel.block<3, 1>(0, i) = a1_kin.fk(
+                a1_ctrl_states.joint_pos.segment<3>(3 * i),
+                rho_opt_list[i], rho_fix_list[i]);
+        a1_ctrl_states.j_foot.block<3, 3>(3 * i, 3 * i) = a1_kin.jac(
+                a1_ctrl_states.joint_pos.segment<3>(3 * i),
+                rho_opt_list[i], rho_fix_list[i]);
+        Eigen::Matrix3d tmp_mtx = a1_ctrl_states.j_foot.block<3, 3>(3 * i, 3 * i);
+        Eigen::Vector3d tmp_vec = a1_ctrl_states.joint_vel.segment<3>(3 * i);
+        a1_ctrl_states.foot_vel_rel.block<3, 1>(0, i) = tmp_mtx * tmp_vec;
+
+        a1_ctrl_states.foot_pos_abs.block<3, 1>(0, i) = a1_ctrl_states.root_rot_mat * a1_ctrl_states.foot_pos_rel.block<3, 1>(0, i);
+        a1_ctrl_states.foot_vel_abs.block<3, 1>(0, i) = a1_ctrl_states.root_rot_mat * a1_ctrl_states.foot_vel_rel.block<3, 1>(0, i);
+
+        a1_ctrl_states.foot_pos_world.block<3, 1>(0, i) = a1_ctrl_states.foot_pos_abs.block<3, 1>(0, i) + a1_ctrl_states.root_pos;
+        a1_ctrl_states.foot_vel_world.block<3, 1>(0, i) = a1_ctrl_states.foot_vel_abs.block<3, 1>(0, i) + a1_ctrl_states.root_lin_vel;
+    }
+
+}
+
 // FL
 void GazeboA1ROS::FL_hip_state_callback(const unitree_legged_msgs::MotorState &a1_joint_state) {
     a1_ctrl_states.joint_pos[0] = a1_joint_state.q;
@@ -382,24 +446,28 @@ void GazeboA1ROS::RR_foot_contact_callback(const geometry_msgs::WrenchStamped &f
 
 void GazeboA1ROS::
 joy_callback(const sensor_msgs::Joy::ConstPtr &joy_msg) {
+//    ROS_WARN("receive joy cmd!!");
     // left updown
     joy_cmd_velz = joy_msg->axes[1] * JOY_CMD_BODY_HEIGHT_VEL;
 
     //A
     if (joy_msg->buttons[0] == 1) {
+        ROS_WARN("receive joy mode change command!!");
         joy_cmd_ctrl_state_change_request = true;
     }
 
     // right updown
-    joy_cmd_velx = joy_msg->axes[5] * JOY_CMD_VELX_MAX;
+    joy_cmd_velx = joy_msg->axes[6] * JOY_CMD_VELX_MAX;
     // right horiz
-    joy_cmd_vely = joy_msg->axes[2] * JOY_CMD_VELY_MAX;
+    joy_cmd_vely = joy_msg->axes[7] * JOY_CMD_VELY_MAX;
     // left horiz
     joy_cmd_yaw_rate = joy_msg->axes[0] * JOY_CMD_YAW_MAX;
     // up-down button
-    joy_cmd_pitch_rate = joy_msg->axes[7] * JOY_CMD_PITCH_MAX;
+    joy_cmd_pitch_rate = joy_msg->axes[2] * JOY_CMD_PITCH_MAX;
     // left-right button
-    joy_cmd_roll_rate = joy_msg->axes[6] * JOY_CMD_ROLL_MAX;
+    joy_cmd_roll_rate = joy_msg->axes[5] * JOY_CMD_ROLL_MAX;
+
+//    std::cerr<<"cmd velocity are "<<joy_cmd_velx <<" "<<joy_cmd_vely <<" "<<joy_cmd_roll_rate <<" "<<joy_cmd_pitch_rate<<" "<<joy_cmd_yaw_rate<<"\n";
 
     // lb
     if (joy_msg->buttons[4] == 1) {

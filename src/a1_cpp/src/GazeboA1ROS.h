@@ -32,7 +32,7 @@
 #include <unitree_legged_msgs/MotorState.h>
 #include <unitree_legged_msgs/MotorCmd.h>
 #include <unitree_legged_msgs/LowCmd.h>
-// #include <gazebo_msgs/ModelStates.h>
+ #include <gazebo_msgs/ModelStates.h>
 
 // control parameters
 #include "A1Params.h"
@@ -58,6 +58,8 @@ public:
     void gt_pose_callback(const nav_msgs::Odometry::ConstPtr &odom);
 
     void imu_callback(const sensor_msgs::Imu::ConstPtr &imu);
+
+    void gazebo_model_state_callback(const gazebo_msgs::ModelStates::ConstPtr &model_states);
 
     void joy_callback(const sensor_msgs::Joy::ConstPtr &joy_msg);
 
@@ -110,6 +112,7 @@ private:
     ros::Subscriber sub_gt_pose_msg;
     ros::Subscriber sub_imu_msg;
     ros::Subscriber sub_joy_msg;
+    ros::Subscriber sub_gazebo_model_state_msg_;
 
     // debug estimation
     ros::Publisher pub_estimated_pose;

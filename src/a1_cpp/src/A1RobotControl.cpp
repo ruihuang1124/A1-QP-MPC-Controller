@@ -281,7 +281,7 @@ void A1RobotControl::generate_swing_legs_ctrl(A1CtrlStates &state, double dt) {
         }
     }
 
-    std::cout << "foot_pos_recent_contact z: " << state.foot_pos_recent_contact.block<1, 4>(2, 0) << std::endl;
+//    std::cout << "foot_pos_recent_contact z: " << state.foot_pos_recent_contact.block<1, 4>(2, 0) << std::endl;
 
     state.foot_forces_kin = foot_forces_kin;
 }
@@ -520,6 +520,7 @@ Eigen::Matrix<double, 3, NUM_LEG> A1RobotControl::compute_grf(A1CtrlStates &stat
         // solve
         auto t4 = std::chrono::high_resolution_clock::now();
         if (!solver.isInitialized()) {
+            ROS_WARN("initializing solver");
             solver.settings()->setVerbosity(false);
             solver.settings()->setWarmStart(true);
             solver.data()->setNumberOfVariables(NUM_DOF * PLAN_HORIZON);
@@ -536,6 +537,8 @@ Eigen::Matrix<double, 3, NUM_LEG> A1RobotControl::compute_grf(A1CtrlStates &stat
             solver.updateLowerBound(mpc_solver.lb);
             solver.updateUpperBound(mpc_solver.ub);
         }
+
+
         auto t5 = std::chrono::high_resolution_clock::now();
         solver.solve();
         auto t6 = std::chrono::high_resolution_clock::now();

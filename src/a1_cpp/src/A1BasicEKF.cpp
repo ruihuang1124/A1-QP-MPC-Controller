@@ -160,5 +160,6 @@ void A1BasicEKF::update_estimation(A1CtrlStates& state, double dt) {
     state.estimated_root_vel = x.segment<3>(3);
 
     state.root_pos = x.segment<3>(0);
+//    std::cout<<"estimated z position is:"<< state.root_pos[2];
     state.root_lin_vel = x.segment<3>(3);
 }
